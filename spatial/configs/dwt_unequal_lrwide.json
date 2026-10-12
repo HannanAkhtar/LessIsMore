@@ -1,0 +1,53 @@
+{
+  "mode": "dwt",
+  "bands": {
+    "LL": {
+      "modelsize": 1.5,
+      "rank": 61
+    },
+    "LH": {
+      "modelsize": 0.75,
+      "rank": 43
+    },
+    "HL": {
+      "modelsize": 0.75,
+      "rank": 43
+    },
+    "HH": {
+      "modelsize": 0.5,
+      "rank": 35
+    }
+  },
+  "lowrank_blocks": "3,4",
+  "crop_list": "320_640",
+  "resize_list": "-1",
+  "enc_strds": [
+    5,
+    4,
+    4,
+    2,
+    2
+  ],
+  "dec_strds": [
+    5,
+    4,
+    4,
+    2,
+    2
+  ],
+  "enc_dim": "64_16",
+  "ks": "0_1_5",
+  "reduce": 1.2,
+  "lower_width": 12,
+  "conv_type": [
+    "convnext",
+    "pshuffel"
+  ],
+  "act": "gelu",
+  "norm": "none",
+  "loss": "L2",
+  "lr": 0.001,
+  "quant_model_bit": 8,
+  "quant_embed_bit": 6,
+  "prune_ratio": 0.1
+}

@@ -1,0 +1,12 @@
+# GPU-enabled requirements for HNeRV expert-decoder experiments.
+# Installs the CUDA 12.8 PyTorch wheel. This matches the tested setup:
+# torch 2.11.0+cu128 on NVIDIA Quadro RTX 4000.
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+torch==2.11.0+cu128
+numpy>=1.23
+pillow>=9.0
+tqdm>=4.64
+pandas>=1.5
+pyyaml>=6.0
+matplotlib>=3.6

@@ -1,0 +1,101 @@
+{
+  "mode": "tiles16",
+  "conv_type": [
+    "convnext",
+    "pshuffel"
+  ],
+  "act": "gelu",
+  "norm": "none",
+  "crop_list": "160_320",
+  "resize_list": "-1",
+  "loss": "L2",
+  "enc_strds": [
+    5,
+    4,
+    2,
+    2,
+    2
+  ],
+  "enc_dim": "64_16",
+  "dec_strds": [
+    5,
+    4,
+    2,
+    2,
+    2
+  ],
+  "ks": "0_1_5",
+  "reduce": 1.2,
+  "lower_width": 8,
+  "lowrank_blocks": "3,4",
+  "lr": 0.001,
+  "quant_model_bit": 8,
+  "quant_embed_bit": 6,
+  "prune_ratio": 0.1,
+  "bands": {
+    "T00": {
+      "modelsize": 0.25,
+      "rank": 25
+    },
+    "T01": {
+      "modelsize": 0.25,
+      "rank": 25
+    },
+    "T02": {
+      "modelsize": 0.25,
+      "rank": 25
+    },
+    "T03": {
+      "modelsize": 0.25,
+      "rank": 25
+    },
+    "T10": {
+      "modelsize": 0.25,
+      "rank": 25
+    },
+    "T11": {
+      "modelsize": 0.25,
+      "rank": 25
+    },
+    "T12": {
+      "modelsize": 0.25,
+      "rank": 25
+    },
+    "T13": {
+      "modelsize": 0.25,
+      "rank": 25
+    },
+    "T20": {
+      "modelsize": 0.25,
+      "rank": 25
+    },
+    "T21": {
+      "modelsize": 0.25,
+      "rank": 25
+    },
+    "T22": {
+      "modelsize": 0.25,
+      "rank": 25
+    },
+    "T23": {
+      "modelsize": 0.25,
+      "rank": 25
+    },
+    "T30": {
+      "modelsize": 0.25,
+      "rank": 25
+    },
+    "T31": {
+      "modelsize": 0.25,
+      "rank": 25
+    },
+    "T32": {
+      "modelsize": 0.25,
+      "rank": 25
+    },
+    "T33": {
+      "modelsize": 0.25,
+      "rank": 25
+    }
+  }
+}

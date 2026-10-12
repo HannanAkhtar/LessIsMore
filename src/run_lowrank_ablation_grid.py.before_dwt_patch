@@ -1,0 +1,305 @@
+from __future__ import annotations
+
+import argparse
+import copy
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
+from .args import add_common_args
+from .data import FrameFolderDataset
+from .experiment import train_one_baseline, evaluate_saved_baseline
+from .flops import count_model_flops
+from .metrics import batch_psnr, batch_ssim, compression_bpp
+from .models import (
+    build_hnerv_with_target_decoder_params,
+    build_lowrank_hnerv_with_width,
+    build_lowrank_hnerv_with_target_decoder_params,
+    decoder_num_parameters,
+    encoder_num_parameters,
+    total_num_parameters,
+    infer_embedding_shape,
+    model_config_dict,
+)
+from .run_all_sequences import find_sequences
+from .utils import ensure_dir, save_json, pick_device, move_batch, set_seed
+
+
+def parse_ablation_spec(spec: str) -> Tuple[str, List[int]]:
+    """Parse strings like 'same_width:3,4' or 'widened:2,3,4'."""
+    if ":" not in spec:
+        raise ValueError(f"Ablation spec must look like mode:blocks, e.g. widened:3,4. Got {spec!r}")
+    mode, blocks = spec.split(":", 1)
+    mode = mode.strip().lower()
+    if mode not in {"same_width", "widened"}:
+        raise ValueError(f"Unknown ablation mode {mode!r}; use same_width or widened")
+    block_ids = [int(x.strip()) for x in blocks.split(",") if x.strip() != ""]
+    if not block_ids:
+        raise ValueError(f"No decoder blocks supplied in ablation spec {spec!r}")
+    return mode, block_ids
+
+
+def blocks_tag(blocks: List[int]) -> str:
+    return "b" + "".join(str(int(b)) for b in blocks)
+
+
+def build_lowrank_ablation_model(args, mode: str, blocks: List[int], baseline_width: int):
+    if mode == "same_width":
+        return build_lowrank_hnerv_with_width(
+            dec_width=baseline_width,
+            emb_dim=args.emb_dim,
+            c1=args.c1,
+            enc_strides=args.enc_strides,
+            dec_strides=args.dec_strides,
+            reduce=args.reduce,
+            kmin=args.kmin,
+            kmax=args.kmax,
+            blocks_per_stage=args.blocks_per_stage,
+            lowrank_rank=args.lowrank_ablation_rank,
+            lowrank_blocks=blocks,
+            lowrank_factorize_from=0,
+        )
+    if mode == "widened":
+        return build_lowrank_hnerv_with_target_decoder_params(
+            target_m=args.baseline_decoder_m,
+            emb_dim=args.emb_dim,
+            c1=args.c1,
+            enc_strides=args.enc_strides,
+            dec_strides=args.dec_strides,
+            reduce=args.reduce,
+            kmin=args.kmin,
+            kmax=args.kmax,
+            blocks_per_stage=args.blocks_per_stage,
+            lowrank_rank=args.lowrank_ablation_rank,
+            lowrank_blocks=blocks,
+            lowrank_factorize_from=0,
+            max_width=args.lowrank_ablation_max_width,
+        )
+    raise ValueError(mode)
+
+
+def train_lowrank_model(model: nn.Module, dataset: FrameFolderDataset, args, out_dir: Path, model_name: str) -> Dict[str, Any]:
+    device = pick_device(args.device)
+    model = model.to(device)
+    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True)
+    opt = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, args.epochs_lowrank))
+    loss_fn = nn.MSELoss()
+    best_psnr = -1.0
+    best_path = out_dir / f"{model_name}_best.pt"
+    last_path = out_dir / f"{model_name}_last.pt"
+    t0 = time.time()
+
+    for epoch in range(1, args.epochs_lowrank + 1):
+        model.train()
+        losses = []
+        pbar = tqdm(loader, desc=f"{model_name} epoch {epoch}/{args.epochs_lowrank}", leave=False)
+        for batch in pbar:
+            batch = move_batch(batch, device)
+            x = batch["image"]
+            pred = model(x)
+            loss = loss_fn(pred, x)
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            opt.step()
+            losses.append(float(loss.item()))
+            pbar.set_postfix(loss=np.mean(losses))
+        sched.step()
+        if epoch % args.eval_every == 0 or epoch == args.epochs_lowrank:
+            metrics = evaluate_lowrank_model(model, dataset, args, device, model_name=model_name)
+            if metrics["psnr"] > best_psnr:
+                best_psnr = metrics["psnr"]
+                torch.save({
+                    "model": model.state_dict(),
+                    "config": model_config_dict(model),
+                    "args": vars(args),
+                    "metrics": metrics,
+                }, best_path)
+
+    torch.save({
+        "model": model.state_dict(),
+        "config": model_config_dict(model),
+        "args": vars(args),
+    }, last_path)
+    metrics = evaluate_lowrank_model(model, dataset, args, device, model_name=model_name)
+    metrics.update({
+        "train_seconds": time.time() - t0,
+        "checkpoint": str(last_path),
+        "best_checkpoint": str(best_path),
+    })
+    return metrics
+
+
+@torch.no_grad()
+def evaluate_lowrank_model(model: nn.Module, dataset: FrameFolderDataset, args, device, model_name: str) -> Dict[str, Any]:
+    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
+    model.eval().to(device)
+    psnrs, ssims = [], []
+    for batch in tqdm(loader, desc=f"eval {model_name}", leave=False):
+        batch = move_batch(batch, device)
+        x = batch["image"]
+        pred = model(x)
+        psnrs.append(batch_psnr(pred, x))
+        ssims.append(batch_ssim(pred, x))
+
+    T = len(dataset)
+    H, W = args.img_size
+    emb_shape = infer_embedding_shape((H, W), args.enc_strides, args.emb_dim)
+    embedding_values = T * int(np.prod(emb_shape))
+    dec_params = decoder_num_parameters(model)
+    bpp_stats = compression_bpp(dec_params, embedding_values, T, H, W, args.model_bits, args.embed_bits, 0, args.prune_ratio)
+    flops = count_model_flops(model.decoder, (1, *emb_shape), device=str(device), flop_mult=args.flop_mult)
+    return {
+        "model_type": model_name,
+        "sequence": Path(args.data_path).name,
+        "frames": T,
+        "height": H,
+        "width": W,
+        "psnr": float(np.mean(psnrs)),
+        "ssim": float(np.mean(ssims)),
+        "decoder_params": int(dec_params),
+        "encoder_params_not_stored": int(encoder_num_parameters(model)),
+        "total_trainable_params": int(total_num_parameters(model)),
+        "embedding_values": int(embedding_values),
+        "cluster_bits": 0,
+        "gflops_per_frame_decoder_only": float(flops / 1e9),
+        **bpp_stats,
+    }
+
+
+def _run_one_sequence(args, seq: Path, seq_out: Path) -> List[Dict[str, Any]]:
+    ensure_dir(seq_out)
+    dataset = FrameFolderDataset(seq, img_size=tuple(args.img_size), preprocess=args.preprocess)
+
+    rows: List[Dict[str, Any]] = []
+
+    if not getattr(args, "skip_baseline", False):
+        # Train/evaluate dense HNeRV baseline once.
+        baseline_args = copy.deepcopy(args)
+        baseline_args.data_path = str(seq)
+        baseline_args.out_dir = str(seq_out / "baseline_dense")
+        ensure_dir(baseline_args.out_dir)
+
+        if not (Path(baseline_args.out_dir) / "baseline_last.pt").exists() or not args.skip_existing_models:
+            train_one_baseline(baseline_args)
+
+        baseline = evaluate_saved_baseline(baseline_args)
+        rows.append(baseline)
+    else:
+        print(f"[skip_baseline] Skipping dense baseline for {seq.name}; running only low-rank variants.")
+
+    # Recover the dense baseline width to use for same-width low-rank variants.
+    dense_model = build_hnerv_with_target_decoder_params(
+        target_m=args.baseline_decoder_m,
+        emb_dim=args.emb_dim,
+        c1=args.c1,
+        enc_strides=args.enc_strides,
+        dec_strides=args.dec_strides,
+        reduce=args.reduce,
+        kmin=args.kmin,
+        kmax=args.kmax,
+        blocks_per_stage=args.blocks_per_stage,
+    )
+    baseline_width = int(dense_model.decoder.dec_width)
+
+    for raw_spec in args.lowrank_ablation_specs:
+        mode, blocks = parse_ablation_spec(raw_spec)
+        tag = f"lowrank_{'samew' if mode == 'same_width' else 'wide'}_{blocks_tag(blocks)}"
+        variant_dir = ensure_dir(seq_out / tag)
+        model = build_lowrank_ablation_model(args, mode, blocks, baseline_width)
+        params_before = decoder_num_parameters(model)
+        print(f"\n--- Low-rank ablation: {seq.name}, {tag}, blocks={blocks}, rank={args.lowrank_ablation_rank}, params={params_before:,} ---")
+
+        ckpt_path = variant_dir / f"{tag}_last.pt"
+        if ckpt_path.exists() and args.skip_existing_models:
+            device = pick_device(args.device)
+            ckpt = torch.load(ckpt_path, map_location=device)
+            model.load_state_dict(ckpt["model"])
+            metrics = evaluate_lowrank_model(model.to(device), dataset, args, device, model_name=tag)
+        else:
+            variant_args = copy.deepcopy(args)
+            variant_args.data_path = str(seq)
+            variant_args.out_dir = str(variant_dir)
+            metrics = train_lowrank_model(model, dataset, variant_args, variant_dir, model_name=tag)
+            
+        metrics.update({
+            "lowrank_mode": mode,
+            "lowrank_blocks": ",".join(str(i) for i in blocks),
+            "lowrank_rank": int(args.lowrank_ablation_rank),
+            "dec_width": int(model.decoder.dec_width),
+            "target_decoder_m": float(args.baseline_decoder_m) if mode == "widened" else None,
+            "baseline_dec_width": int(baseline_width),
+        })
+        rows.append(metrics)
+        pd.DataFrame(rows).to_csv(seq_out / "summary_partial.csv", index=False)
+
+    pd.DataFrame(rows).to_csv(seq_out / "summary.csv", index=False)
+    save_json({"rows": rows}, seq_out / "summary.json")
+    return rows
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Low-rank HNeRV ablation grid: dense baseline vs same-width and widened low-rank decoders.")
+    parser.add_argument("--data_root", type=str, required=True, help="Path containing sequence folders, e.g. ../data")
+    parser.add_argument("--runs_root", type=str, default="runs_lowrank_ablation_grid", help="Root folder for all output runs")
+    parser.add_argument("--only", type=str, nargs="*", default=None, help="Optional sequence folder names to run")
+    parser.add_argument("--exclude_prefix", type=str, default=None, help="Exclude sequence folders starting with this prefix, e.g. mixed_")
+    parser.add_argument("--lowrank_ablation_specs", type=str, nargs="+", default=["same_width:3,4", "widened:3,4", "widened:2,3,4"],
+                        help="Ablations to run. Format: mode:blocks, e.g. same_width:3,4 widened:3,4 widened:2,3,4")
+    parser.add_argument("--lowrank_ablation_rank", type=int, default=88, help="Intermediate low-rank channel count used in factorized decoder blocks.")
+    parser.add_argument("--lowrank_ablation_max_width", type=int, default=4096, help="Maximum decoder width searched for widened low-rank models.")
+    parser.add_argument("--epochs_lowrank", type=int, default=None, help="Training epochs for low-rank ablation models. Defaults to --epochs_baseline.")
+    parser.add_argument("--skip_existing", action="store_true", help="Skip sequences with summary.csv already present")
+    parser.add_argument("--skip_existing_models", action="store_true", help="Reuse existing checkpoints inside a sequence folder when available")
+    parser.add_argument(
+        "--skip_baseline",
+        action="store_true",
+        help="Do not train/evaluate the dense baseline; run only the low-rank ablation models."
+    )
+    add_common_args(parser)
+    args = parser.parse_args()
+    if args.epochs_lowrank is None:
+        args.epochs_lowrank = args.epochs_baseline
+
+    data_root = Path(args.data_root)
+    runs_root = ensure_dir(args.runs_root)
+    seqs = find_sequences(data_root, args.exclude_prefix)
+    if args.only:
+        wanted = set(args.only)
+        seqs = [p for p in seqs if p.name in wanted]
+    if not seqs:
+        raise RuntimeError(f"No sequence folders found in {data_root}")
+
+    all_dfs = []
+    for seq in seqs:
+        seq_out = runs_root / seq.name
+        if args.skip_existing and (seq_out / "summary.csv").exists():
+            df = pd.read_csv(seq_out / "summary.csv")
+            all_dfs.append(df)
+            print(f"Skipping {seq.name}; existing {seq_out / 'summary.csv'}")
+            continue
+        print(f"\n=== Running low-rank HNeRV ablation sequence: {seq.name} ===")
+        rows = _run_one_sequence(args, seq, seq_out)
+        all_dfs.append(pd.DataFrame(rows))
+
+    combined = pd.concat(all_dfs, ignore_index=True)
+    combined_path = runs_root / "all_results.csv"
+    combined.to_csv(combined_path, index=False)
+    print(f"\nAll low-rank HNeRV ablation results saved to: {combined_path}")
+    cols = [c for c in [
+        "sequence", "model_type", "psnr", "ssim", "bpp", "decoder_params",
+        "gflops_per_frame_decoder_only", "lowrank_mode", "lowrank_blocks",
+        "lowrank_rank", "dec_width"
+    ] if c in combined.columns]
+    print(combined[cols])
+
+
+if __name__ == "__main__":
+    main()

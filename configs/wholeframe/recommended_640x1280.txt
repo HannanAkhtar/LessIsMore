@@ -1,0 +1,12 @@
+Recommended settings for your current frame folders:
+
+Source frames: 1280x720 images
+Training size: 640x1280
+Preprocess: center_crop
+Reason: HNeRV default stride product is 5*4*4*2*2 = 320. 640 and 1280 are both divisible by 320, giving a 16x2x4 embedding when emb_dim=16.
+
+Recommended command options:
+  --img_size 640 1280
+  --preprocess center_crop
+  --enc_strides 5 4 4 2 2
+  --dec_strides 5 4 4 2 2

@@ -1,0 +1,5 @@
+# Unified project note:
+# The two original codebases used different pinned environments.
+# Prefer your existing HNeRV conda environment if it already runs both scripts.
+# For the standalone whole-frame LR-wide code, install:
+-r requirements-lowrank.txt

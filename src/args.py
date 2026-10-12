@@ -1,0 +1,56 @@
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+
+def add_common_args(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    p.add_argument("--data_path", type=str, default=None, help="Path to one frame folder, e.g. ..\\data\\bunny")
+    p.add_argument("--out_dir", type=str, default=None, help="Output folder for checkpoints and metrics")
+    p.add_argument("--img_size", type=int, nargs=2, default=[640, 1280], metavar=("H", "W"), help="Training/evaluation size. For 1280x720 source images, use 640 1280 with center_crop.")
+    p.add_argument("--preprocess", type=str, default="center_crop", choices=["center_crop", "resize", "none"], help="Use center_crop for 1280x720 -> 1280x640 without distortion.")
+    p.add_argument("--enc_strides", type=int, nargs="+", default=[5,4,4,2,2])
+    p.add_argument("--dec_strides", type=int, nargs="+", default=[5,4,4,2,2])
+    p.add_argument("--c1", type=int, default=64)
+    p.add_argument("--emb_dim", type=int, default=16)
+    p.add_argument("--reduce", type=float, default=1.2)
+    p.add_argument("--kmin", type=int, default=1)
+    p.add_argument("--kmax", type=int, default=5)
+    p.add_argument("--blocks_per_stage", type=int, default=1)
+    p.add_argument("--baseline_decoder_m", type=float, default=3.0)
+    p.add_argument("--expert_decoder_m", type=float, default=0.75)
+    p.add_argument("--expert_decoder_type", type=str, default="dense", choices=["dense", "lowrank"], help="dense = original narrow HNeRV expert decoder; lowrank = preserve baseline width and factorize selected decoder blocks.")
+    p.add_argument("--lowrank_base_decoder_m", type=float, default=None, help="Dense baseline decoder size used to choose the preserved low-rank expert width. Defaults to --baseline_decoder_m.")
+    p.add_argument("--lowrank_factorize_from", type=str, default="auto", help="First decoder block index to factorize for low-rank experts, or auto. Auto uses 2 for >=1.2M/expert and 1 for smaller budgets.")
+    p.add_argument("--lowrank_rank_search_max", type=int, default=2048, help="Maximum intermediate rank searched for low-rank expert decoders.")
+    p.add_argument("--num_experts", type=int, default=4)
+    p.add_argument("--cluster_method", type=str, default="embedding", choices=["embedding", "random", "temporal"])
+    p.add_argument("--cluster_use_error", action="store_true", help="Append normalized baseline reconstruction error to embedding clustering features.")
+    p.add_argument("--error_weight", type=float, default=1.0)
+    p.add_argument("--epochs_baseline", type=int, default=300)
+    p.add_argument("--epochs_experts", type=int, default=300)
+    p.add_argument("--epochs_multihead", type=int, default=None, help="Epochs for multi-head HNeRV. Defaults to --epochs_experts if omitted.")
+    p.add_argument("--eval_every", type=int, default=50)
+    p.add_argument("--batch_size", type=int, default=2)
+    p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--weight_decay", type=float, default=0.0)
+    p.add_argument("--num_workers", type=int, default=0)
+    p.add_argument("--model_bits", type=int, default=8)
+    p.add_argument("--embed_bits", type=int, default=8)
+    p.add_argument("--prune_ratio", type=float, default=0.0,
+                   help="Fraction of non-encoder weights to prune before quantized playback evaluation, e.g. 0.10 for 10%% pruning.")
+    p.add_argument("--eval_variant", type=str, default="quant", choices=["quant", "orig"],
+                   help="quant = evaluate PSNR/SSIM from quantized embeddings and quantized/pruned decoder; orig = old unquantized model(x) evaluation.")
+    p.add_argument("--flop_mult", type=int, default=1, choices=[1,2], help="1 counts MAC as one op; 2 counts multiply and add separately.")
+    p.add_argument("--multihead_head_kernel", type=int, default=3, help="Kernel size of the cluster-specific RGB projection in each head.")
+    p.add_argument("--multihead_head_type", type=str, default="rgb", choices=["rgb", "refine"], help="rgb = RGB-only heads; refine = residual bottleneck refinement block + RGB head.")
+    p.add_argument("--refine_hidden_ch", type=int, default=8, help="Hidden channels in each cluster-specific residual refinement block.")
+    p.add_argument("--refine_kernel_size", type=int, default=3, help="Kernel size of the first convolution in each refinement block.")
+    p.add_argument("--train_heads_only", action="store_true", help="Freeze encoder and shared decoder trunk; train only cluster-specific heads/refinement blocks.")
+    p.add_argument("--multihead_init_from_baseline", action="store_true", default=True, help="Initialize shared trunk and all heads from the trained baseline when shapes match. Default: True.")
+    p.add_argument("--no_multihead_init_from_baseline", action="store_false", dest="multihead_init_from_baseline", help="Train multi-head HNeRV from random initialization.")
+    p.add_argument("--multihead_budget_neutral", action="store_true", help="Search decoder width so shared trunk + all heads match --multihead_decoder_m or --baseline_decoder_m. If omitted, use baseline width and add tiny extra heads.")
+    p.add_argument("--multihead_decoder_m", type=float, default=None, help="Target total decoder size in millions for budget-neutral multi-head mode. Defaults to --baseline_decoder_m.")
+    p.add_argument("--device", type=str, default="auto")
+    p.add_argument("--seed", type=int, default=123)
+    return p
