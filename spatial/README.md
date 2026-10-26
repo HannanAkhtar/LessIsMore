@@ -1,63 +1,14 @@
-# HNeRV-DWT-v3: LR-wide DWT, Quadrant, and 16-tile experiments
+# Spatial experiments
 
-This regenerated project adds:
+Use the [top-level README](../README.md) for setup, training, packed playback, and manuscript caveats. `run_experiment.py` prepares independent tiles, invokes the modified HNeRV trainer in `HNeRV-main/`, extracts predictions, stitches full frames, and produces legacy summaries. `evaluate_packed.py` serializes saved quantized decoder weights and embeddings, reloads them, and computes measured packed BPP with full-frame PSNR/windowed SSIM.
 
-- DWT mode: LL/LH/HL/HH subbands.
-- Quadrant mode: Q0/Q1/Q2/Q3 spatial split.
-- 16-tile mode: 4x4 spatial grid T00...T33.
-- Q8/E6 quantized prediction extraction by default.
-- P10 global magnitude pruning before final evaluation/quantization.
-- Run outputs contained inside `runs/` under the project folder.
+Configurations:
 
-## Important metric behavior
+- `configs/quadrant_equal_lrwide.json`: four low-rank widened tiles, rank 43.
+- `configs/quadrant_dense_3m_reference.json`: dense four-tile reference target. No local checkpoint proves exact paper parameter count.
+- `configs/tile16_equal_3m_lrwide.json`: historical committed rank 22.
+- `configs/tile16_rank23_0p198_unverified.json`: rank 23 candidate based on the old v2 generator; published checkpoint provenance must still be checked.
 
-Default reconstruction uses `--prediction_variant quant`, so full-frame PSNR/SSIM are computed from `visualize_model_quant` predictions. This matches Q8/E6 + P10 reporting. Use `--prediction_variant orig` only if you want unquantized/unpruned comparison from `visualize_model_orig`.
+The default `run_framework.py spatial16` route deliberately keeps the historical rank-22 file. Select the rank-23 candidate explicitly with `spatial-custom --config ...`. The native 1080×1920 manuscript run requires its missing original configuration and checkpoints; generic tile padding/cropping in `run_experiment.py` alone is not numerical reproduction.
 
-## Install/use environment
-
-```bash
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate /shared/tshanableh/conda_envs/hnerv310
-unset PYTHONPATH
-export PYTHONNOUSERSITE=1
-```
-
-## 16-tile debug run
-
-```bash
-cd /shared/tshanableh/NeRV/HNeRV-DWT-v3
-
-/shared/tshanableh/conda_envs/hnerv310/bin/python run_experiment.py debug   --config /shared/tshanableh/NeRV/HNeRV-DWT-v3/configs/tile16_equal_3m_lrwide.json   --sequence bunny   --tag tile16_3m_debug_2ep_q8p10   --epochs 2   --eval_freq 1   --gpu 0   --expected_frames 132   --clean
-```
-
-## 16-tile full run, 3M target
-
-```bash
-cd /shared/tshanableh/NeRV/HNeRV-DWT-v3
-
-/shared/tshanableh/conda_envs/hnerv310/bin/python run_experiment.py debug   --config /shared/tshanableh/NeRV/HNeRV-DWT-v3/configs/tile16_equal_3m_lrwide.json   --sequence bunny   --tag tile16_3m_300ep_q8p10   --epochs 300   --eval_freq 30   --gpu 0   --expected_frames 132   --clean
-```
-
-## 16-tile full run, 4M target
-
-```bash
-cd /shared/tshanableh/NeRV/HNeRV-DWT-v3
-
-/shared/tshanableh/conda_envs/hnerv310/bin/python run_experiment.py debug   --config /shared/tshanableh/NeRV/HNeRV-DWT-v3/configs/tile16_equal_4m_lrwide.json   --sequence bunny   --tag tile16_4m_300ep_q8p10   --epochs 300   --eval_freq 30   --gpu 0   --expected_frames 132   --clean
-```
-
-## Check results
-
-```bash
-cat runs/tiles16_bunny_tile16_3m_300ep_q8p10/summary_total_quant.csv
-cat runs/tiles16_bunny_tile16_3m_300ep_q8p10/part_metrics_quant.csv
-cat runs/tiles16_bunny_tile16_3m_300ep_q8p10/recon_quant/metrics.csv | tail
-```
-
-## Configs
-
-- `configs/quadrant_equal_lrwide.json`: previous 4-quadrant equal split, now Q8/E6 + P10.
-- `configs/quadrant_unequal_lrwide.json`: stronger Q0/Q3 allocation.
-- `configs/dwt_unequal_lrwide.json`: DWT split, now Q8/E6 + P10.
-- `configs/tile16_equal_3m_lrwide.json`: 16 tiles, ~3M target, 0.1875M per tile.
-- `configs/tile16_equal_4m_lrwide.json`: 16 tiles, ~4M target, 0.25M per tile.
+`summary_total_quant.csv` retains `sum_bpp` for historical readers and labels it `legacy_sum_of_tile_estimates_not_measured_packed_bpp`. Use `packed_bpp` from `evaluate_packed.py` for measured archive storage. `run_experiment.py score` uses a legacy global SSIM surrogate; use packed playback for publication-protocol windowed SSIM.

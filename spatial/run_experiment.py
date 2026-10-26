@@ -12,6 +12,10 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+def natural_key(path):
+    return [int(part) if part.isdigit() else part.lower()
+            for part in re.split(r"(\d+)", path.name)]
+
 
 DWT_BANDS = ("LL", "LH", "HL", "HH")
 QUAD_BANDS = ("Q0", "Q1", "Q2", "Q3")
@@ -20,7 +24,10 @@ TILE16_BANDS = tuple(f"T{r}{c}" for r in range(4) for c in range(4))
 
 def list_images(folder: Path):
     exts = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
-    files = [p for p in sorted(folder.iterdir()) if p.suffix.lower() in exts]
+    if not folder.is_dir():
+        raise FileNotFoundError(f"Frame folder not found: {folder}")
+    files = [p for p in folder.iterdir() if p.suffix.lower() in exts]
+    files.sort(key=natural_key)
     if not files:
         raise FileNotFoundError(f"No image files found in {folder}")
     return files
@@ -141,6 +148,13 @@ def load_cfg(args):
     if "bands" not in cfg:
         raise ValueError(f"Config must include a bands dictionary: {args.config}")
     cfg["bands_list"] = list(cfg["bands"].keys())
+    expected = expected_bands_for_mode(cfg["mode"])
+    if tuple(cfg["bands_list"]) != expected:
+        raise ValueError(f"Expected bands {expected} for {cfg['mode']}")
+    if any(float(part["modelsize"]) <= 0 for part in cfg["bands"].values()):
+        raise ValueError("All per-tile modelsize targets must be positive")
+    if cfg.get("lowrank_blocks") and any(int(part["rank"]) <= 0 for part in cfg["bands"].values()):
+        raise ValueError("Low-rank tile ranks must be positive")
     return cfg
 
 
@@ -177,6 +191,9 @@ def expected_bands_for_mode(mode):
 def prepare(args):
     cfg = load_cfg(args)
     mode = cfg["mode"]
+    grid = 4 if mode in ("tiles16", "tile16") else 2
+    if mode != "dwt" and (args.full_height % grid or args.full_width % grid):
+        raise ValueError(f"Full-frame dimensions must be divisible by the {grid}x{grid} tile grid")
     bands = cfg["bands_list"]
     expected = expected_bands_for_mode(mode)
     if tuple(bands) != tuple(expected):
@@ -187,15 +204,29 @@ def prepare(args):
     out_root.mkdir(parents=True, exist_ok=True)
 
     frames = list_images(gt_dir)
+    if args.expected_frames is not None and len(frames) != args.expected_frames:
+        raise ValueError(f"Expected {args.expected_frames} source frames in {gt_dir}, found {len(frames)}")
     decomposed = []
+    tile_h, tile_w = map(int, cfg["crop_list"].split("_"))
+    stride_product = math.prod(cfg["enc_strds"])
+    if mode != "dwt" and (tile_h % stride_product or tile_w % stride_product):
+        raise ValueError(f"Configured tile dimensions {tile_h}x{tile_w} must be divisible by encoder stride {stride_product}")
+    valid_h = args.full_height // (4 if mode in ["tiles16", "tile16"] else 2)
+    valid_w = args.full_width // (4 if mode in ["tiles16", "tile16"] else 2)
+    if mode != "dwt" and (valid_h > tile_h or valid_w > tile_w):
+        raise ValueError(f"Valid tile {valid_h}x{valid_w} exceeds configured padded tile {tile_h}x{tile_w}")
     for p in frames:
         img = center_crop(read_rgb(p), args.full_height, args.full_width)
         if mode == "dwt":
             decomposed.append(dwt_haar_rgb(img))
         elif mode == "quadrant":
-            decomposed.append(split_quadrants(img))
+            decomposed.append({k: np.pad(v, ((0, tile_h - v.shape[0]),
+                                                  (0, tile_w - v.shape[1]), (0, 0)))
+                               for k, v in split_quadrants(img).items()})
         elif mode in ["tiles16", "tile16"]:
-            decomposed.append(split_tiles(img, 4, 4))
+            decomposed.append({k: np.pad(v, ((0, tile_h - v.shape[0]),
+                                                  (0, tile_w - v.shape[1]), (0, 0)))
+                               for k, v in split_tiles(img, 4, 4).items()})
         else:
             raise ValueError(mode)
 
@@ -214,9 +245,14 @@ def prepare(args):
         "mode": mode,
         "bands": bands,
         "num_frames": len(frames),
+        "source_frames": [p.name for p in frames],
         "orig_data": str(gt_dir),
         "full_height": args.full_height,
         "full_width": args.full_width,
+        "valid_tile_height": valid_h if mode != "dwt" else None,
+        "valid_tile_width": valid_w if mode != "dwt" else None,
+        "padded_tile_height": tile_h,
+        "padded_tile_width": tile_w,
         "normalization": "per_band_per_channel_minmax" if mode == "dwt" else "none",
         "meta": meta,
     }
@@ -254,7 +290,7 @@ def build_train_cmd(args, cfg, band):
         "--modelsize", str(band_cfg["modelsize"]),
         "--lowrank_blocks", cfg["lowrank_blocks"],
         "--lowrank_rank", str(band_cfg["rank"]),
-        "--auto_widen_lowrank",
+        "--manualSeed", str(args.manual_seed),
         "-e", str(args.epochs),
         "--eval_freq", str(args.eval_freq),
         "--lower_width", str(cfg["lower_width"]),
@@ -264,8 +300,9 @@ def build_train_cmd(args, cfg, band):
         "--quant_embed_bit", str(cfg.get("quant_embed_bit", 6)),
         "--prune_ratio", str(cfg.get("prune_ratio", 0.10)),
         "--dump_images",
-        "--overwrite",
     ]
+    if cfg.get("lowrank_blocks"):
+        cmd.append("--auto_widen_lowrank")
     return cmd
 
 
@@ -344,11 +381,22 @@ def reconstruct(args):
 
     files = {b: list_images(pred_root(args, cfg) / f"{args.sequence}_{b}") for b in bands}
     n = len(files[bands[0]])
+    names = [p.name for p in files[bands[0]]]
+    if any([p.name for p in files[b]] != names for b in bands):
+        raise ValueError("Tile prediction filenames do not align")
+    if n != meta["num_frames"]:
+        raise ValueError(f"Expected {meta['num_frames']} tile predictions, got {n}")
 
     for i in range(n):
         parts = {}
         for b in bands:
-            parts[b] = denormalize(read_rgb(files[b][i]), band_meta[b])
+            part = denormalize(read_rgb(files[b][i]), band_meta[b])
+            if mode != "dwt":
+                grid = 4 if mode in ("tiles16", "tile16") else 2
+                valid_h = meta.get("valid_tile_height") or meta["full_height"] // grid
+                valid_w = meta.get("valid_tile_width") or meta["full_width"] // grid
+                part = part[:valid_h, :valid_w]
+            parts[b] = part
 
         if mode == "dwt":
             rec = idwt_haar_rgb(parts)
@@ -358,7 +406,9 @@ def reconstruct(args):
             rec = merge_tiles(parts, 4, 4)
         else:
             raise ValueError(mode)
-        save_rgb(rroot / f"{i:06d}.png", rec)
+        if rec.shape[:2] != (meta["full_height"], meta["full_width"]):
+            raise ValueError(f"Reconstruction has shape {rec.shape[:2]}, expected full frame")
+        save_rgb(rroot / names[i], rec)
     print(f"Saved {n} reconstructed frames to {rroot}")
 
 
@@ -384,6 +434,8 @@ def ssim_global_rgb(pred, gt):
 
 
 def score_folder(gt_files, pred_files, crop_to_pred=True):
+    if len(gt_files) != len(pred_files):
+        raise ValueError(f"Ground-truth/prediction frame-count mismatch: {len(gt_files)} vs {len(pred_files)}")
     rows, psnrs, ssims = [], [], []
     for i, (g, p) in enumerate(zip(gt_files, pred_files)):
         gt, pred = read_rgb(g), read_rgb(p)
@@ -478,7 +530,7 @@ def summarize(args):
         except Exception:
             encoder_m = decoder_m = total_m = 0.0
         gflops = float(row.get("Decoder_GFLOPs", -1) or -1)
-        bpp = float(row.get("bits/pixel", 0) or 0)
+        bpp = float(row.get("bits/pixel", 0) or 0)  # legacy estimate, not archive bytes
 
         total_encoder_m += encoder_m
         total_decoder_m += decoder_m
@@ -533,7 +585,8 @@ def summarize(args):
         writer.writerow(["sum_decoder_m", total_decoder_m])
         writer.writerow(["sum_playback_total_m", total_playback_m])
         writer.writerow(["sum_decoder_gflops", total_gflops])
-        writer.writerow(["sum_bpp", total_bpp])
+        writer.writerow(["sum_bpp", total_bpp])  # retained for historical CSV readers
+        writer.writerow(["bpp_protocol", "legacy_sum_of_tile_estimates_not_measured_packed_bpp"])
         writer.writerow(["quant_model_bit", cfg.get("quant_model_bit", "")])
         writer.writerow(["quant_embed_bit", cfg.get("quant_embed_bit", "")])
         writer.writerow(["prune_ratio", cfg.get("prune_ratio", "")])
@@ -575,7 +628,7 @@ def parse_args():
     p = argparse.ArgumentParser(description="HNeRV LR-wide DWT/quadrant/16-tile experiments")
     p.add_argument("command", choices=["prepare", "train", "extract", "check", "reconstruct", "score", "score_parts", "summarize", "debug", "clean"])
     p.add_argument("--hnerv_repo", default=str(project_root / "HNeRV-main"))
-    p.add_argument("--orig_data", default="/shared/tshanableh/NeRV/data")
+    p.add_argument("--orig_data", default=str(project_root.parent.parent / "data"))
     p.add_argument("--work_root", default=str(project_root / "runs"))
     p.add_argument("--sequence", default="bunny")
     p.add_argument("--tag", default="debug_2ep")
@@ -583,6 +636,7 @@ def parse_args():
     p.add_argument("--epochs", type=int, default=2)
     p.add_argument("--batch_size", type=int, default=2)
     p.add_argument("--gpu", default="0")
+    p.add_argument("--manual_seed", type=int, default=1)
     p.add_argument("--eval_freq", type=int, default=1)
     p.add_argument("--expected_frames", type=int, default=132)
     p.add_argument("--full_height", type=int, default=640)
@@ -595,6 +649,8 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.command == "debug" and run_root(args, load_cfg(args)).exists() and not args.clean:
+        raise FileExistsError("Run directory already exists; choose a new --tag. Existing experiment outputs were preserved.")
     if args.command == "prepare":
         prepare(args)
     elif args.command == "train":

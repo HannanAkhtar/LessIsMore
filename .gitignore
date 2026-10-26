@@ -1,0 +1,33 @@
+# Local datasets and outputs
+data/
+runs/
+spatial/runs/
+spatial/HNeRV-main/output/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.zip
+*.tar
+*.tar.gz
+*.mp4
+*.avi
+*.npy
+*.npz
+
+# Python and tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Local logs and scratch
+*.log
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db

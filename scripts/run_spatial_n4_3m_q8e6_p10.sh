@@ -8,5 +8,4 @@ python run_framework.py spatial4 \
   --eval_freq 30 \
   --expected_frames 132 \
   --batch_size 2 \
-  --gpu 0 \
-  --clean
+  --gpu 0

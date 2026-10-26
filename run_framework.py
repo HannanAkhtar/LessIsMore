@@ -33,8 +33,8 @@ def run_wholeframe(args: argparse.Namespace) -> None:
     cmd = [
         sys.executable,
         str(ROOT / "run_wholeframe_lrwide.py"),
-        "--data_root", args.data_root,
-        "--runs_root", args.runs_root,
+        "--data_root", str(Path(args.data_root).resolve()),
+        "--runs_root", str(Path(args.runs_root).resolve()),
         "--epochs_baseline", str(args.epochs),
         "--epochs_lowrank", str(args.epochs),
         "--batch_size", str(args.batch_size),
@@ -42,6 +42,10 @@ def run_wholeframe(args: argparse.Namespace) -> None:
         "--model_bits", str(args.model_bits),
         "--embed_bits", str(args.embed_bits),
         "--prune_ratio", str(args.prune_ratio),
+        "--seed", str(args.seed if args.seed is not None else 123),
+        "--baseline_decoder_m", str(args.baseline_decoder_m),
+        "--lowrank_rank", str(args.lowrank_rank),
+        "--lowrank_specs", *args.lowrank_specs,
     ]
     if sequences:
         cmd += ["--only", *sequences]
@@ -49,6 +53,10 @@ def run_wholeframe(args: argparse.Namespace) -> None:
         cmd += ["--gpu", str(args.gpu)]
     if args.skip_existing_models:
         cmd.append("--skip_existing_models")
+    if args.dense_only:
+        cmd.append("--dense_only")
+    if args.skip_baseline:
+        cmd.append("--skip_baseline")
     run(cmd, cwd=ROOT, gpu=args.gpu)
 
 
@@ -58,16 +66,20 @@ def run_spatial(args: argparse.Namespace, config: Path, mode: str) -> None:
         sys.executable,
         str(ROOT / "spatial" / "run_experiment.py"),
         "debug",
-        "--config", str(config),
+        "--config", str(config.resolve()),
         "--sequence", args.sequence,
         "--tag", tag,
         "--epochs", str(args.epochs),
         "--eval_freq", str(args.eval_freq),
         "--gpu", str(args.gpu or "0"),
         "--expected_frames", str(args.expected_frames),
-        "--orig_data", args.data_root,
-        "--work_root", args.spatial_runs_root,
+        "--orig_data", str(Path(args.data_root).resolve()),
+        "--work_root", str(Path(args.spatial_runs_root).resolve()),
         "--prediction_variant", args.prediction_variant,
+        "--batch_size", str(args.batch_size),
+        "--manual_seed", str(args.seed if args.seed is not None else 1),
+        "--full_height", str(args.full_height),
+        "--full_width", str(args.full_width),
     ]
     if args.clean:
         cmd.append("--clean")
@@ -90,9 +102,15 @@ def main() -> None:
     parser.add_argument("--only", nargs="*", default=None,
                         help="Sequence list for wholeframe runs, e.g. --only bunny honeybee jockey.")
     parser.add_argument("--epochs", type=int, default=300)
+    parser.add_argument("--seed", type=int, default=None, help="Default 123 for whole-frame, 1 for spatial.")
+    parser.add_argument("--baseline_decoder_m", type=float, default=3.0)
+    parser.add_argument("--lowrank_rank", type=int, default=88)
+    parser.add_argument("--lowrank_specs", nargs="+", default=["same_width:3,4", "widened:3,4"])
     parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--eval_freq", type=int, default=30)
     parser.add_argument("--expected_frames", type=int, default=132)
+    parser.add_argument("--full_height", type=int, default=640)
+    parser.add_argument("--full_width", type=int, default=1280)
     parser.add_argument("--gpu", default="0")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--model_bits", type=int, default=8)
@@ -105,6 +123,8 @@ def main() -> None:
     parser.add_argument("--clean", action="store_true", help="Delete an existing spatial run folder before running.")
     parser.add_argument("--skip_existing_models", action="store_true",
                         help="For wholeframe mode: reuse existing checkpoints and recompute quantized/pruned metrics.")
+    parser.add_argument("--dense_only", action="store_true", help="Whole-frame dense baseline only.")
+    parser.add_argument("--skip_baseline", action="store_true", help="Whole-frame low-rank variants only.")
     args = parser.parse_args()
 
     if args.mode == "wholeframe":

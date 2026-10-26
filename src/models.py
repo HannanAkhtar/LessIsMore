@@ -767,6 +767,21 @@ def infer_embedding_shape(img_size: Tuple[int, int], enc_strides: List[int], emb
 
 
 def model_config_dict(model: nn.Module) -> Dict[str, Any]:
+    if isinstance(model, LowRankHNeRV):
+        return {
+            "model_type": "lowrank_hnerv",
+            "c1": model.encoder.stages[0][0].out_channels,
+            "emb_dim": model.encoder.out_channels,
+            "enc_strides": model.encoder.strides,
+            "dec_width": model.decoder.dec_width,
+            "dec_strides": model.decoder.dec_strides,
+            "reduce": model.decoder.reduce,
+            "kmin": model.decoder.kmin,
+            "kmax": model.decoder.kmax,
+            "lowrank_rank": model.decoder.lowrank_rank,
+            "lowrank_factorize_from": model.decoder.lowrank_factorize_from,
+            "lowrank_blocks": model.decoder.lowrank_blocks,
+        }
     if isinstance(model, MultiHeadRefineHNeRV):
         return {
             "model_type": "multihead_refine_hnerv",

@@ -84,6 +84,35 @@ def batch_ssim(
     return float(ssim_per_image.mean().item())
 
 
+def batch_publication_ssim(pred: torch.Tensor, target: torch.Tensor,
+                           window_size: int = 11, sigma: float = 1.5,
+                           data_range: float = 1.0) -> float:
+    """Full-frame, valid-window single-scale SSIM for packed playback.
+
+    Uses the Gaussian 11x11 window and no edge padding, matching the
+    pytorch_msssim-style spatial recalculation rather than the legacy padded
+    whole-frame helper or global spatial surrogate.
+    """
+    pred = pred.detach().clamp(0, data_range).float()
+    target = target.detach().clamp(0, data_range).float()
+    if pred.shape != target.shape or pred.ndim != 4:
+        raise ValueError("SSIM requires equal NCHW RGB tensor shapes")
+    _, channels, height, width = pred.shape
+    if min(height, width) < window_size:
+        raise ValueError(f"SSIM requires frames at least {window_size}x{window_size}")
+    window = _ssim_window(channels, window_size, sigma, pred.device, pred.dtype)
+    mu_x = F.conv2d(pred, window, groups=channels)
+    mu_y = F.conv2d(target, window, groups=channels)
+    mu_x2, mu_y2 = mu_x.square(), mu_y.square()
+    sigma_x = F.conv2d(pred.square(), window, groups=channels) - mu_x2
+    sigma_y = F.conv2d(target.square(), window, groups=channels) - mu_y2
+    sigma_xy = F.conv2d(pred * target, window, groups=channels) - mu_x * mu_y
+    c1, c2 = (0.01 * data_range) ** 2, (0.03 * data_range) ** 2
+    score = ((2 * mu_x * mu_y + c1) * (2 * sigma_xy + c2) /
+             ((mu_x2 + mu_y2 + c1) * (sigma_x + sigma_y + c2)))
+    return float(score.flatten(1).mean(1).mean().item())
+
+
 def compression_bpp(
     decoder_params: int,
     embedding_values: int,
@@ -95,6 +124,11 @@ def compression_bpp(
     cluster_bits: int = 0,
     prune_ratio: float = 0.0,
 ) -> Dict[str, float]:
+    """Legacy analytical estimate; excludes serialization and scale overhead.
+
+    Its ``bpp`` result must never be reported as measured packed BPP.
+    Use :func:`src.packed_archive.packed_bpp` for a serialized archive.
+    """
     if not 0.0 <= prune_ratio < 1.0:
         raise ValueError(f"prune_ratio must be in [0, 1), got {prune_ratio}")
     effective_decoder_params = decoder_params * (1.0 - prune_ratio)
@@ -110,4 +144,6 @@ def compression_bpp(
         "cluster_bits": float(cluster_bits),
         "total_bits": float(total_bits),
         "bpp": float(total_bits / denom),
+        "analytical_bpp": float(total_bits / denom),
+        "bpp_protocol": "legacy_parameter_count_estimate_excludes_container_and_scales",
     }

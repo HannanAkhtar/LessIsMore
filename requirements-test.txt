@@ -1,0 +1,4 @@
+# CPU-only structural and archive checks (validated with Python 3.11).
+numpy>=1.26,<2
+Pillow>=9.3,<11
+pytest>=7.3,<9

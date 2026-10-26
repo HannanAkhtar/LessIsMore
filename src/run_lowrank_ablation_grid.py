@@ -210,13 +210,23 @@ def _run_one_sequence(args, seq: Path, seq_out: Path) -> List[Dict[str, Any]]:
         baseline_args.out_dir = str(seq_out / "baseline_dense")
         ensure_dir(baseline_args.out_dir)
 
-        if not (Path(baseline_args.out_dir) / "baseline_last.pt").exists() or not args.skip_existing_models:
+        baseline_ckpt = Path(baseline_args.out_dir) / "baseline_last.pt"
+        if baseline_ckpt.exists():
+            if not args.skip_existing_models:
+                raise FileExistsError(f"Existing checkpoint preserved: {baseline_ckpt}. Use --skip_existing_models to evaluate it or a new --runs_root to train.")
+        elif args.skip_existing_models:
+            raise FileNotFoundError(f"Cannot evaluate missing checkpoint: {baseline_ckpt}")
+        else:
             train_one_baseline(baseline_args)
 
         baseline = evaluate_saved_baseline(baseline_args)
         rows.append(baseline)
     else:
         print(f"[skip_baseline] Skipping dense baseline for {seq.name}; running only low-rank variants.")
+
+    if args.dense_only:
+        pd.DataFrame(rows).to_csv(seq_out / ("summary_recomputed.csv" if args.skip_existing_models else "summary.csv"), index=False)
+        return rows
 
     # Recover the dense baseline width to use for same-width low-rank variants.
     dense_model = build_hnerv_with_target_decoder_params(
@@ -241,15 +251,19 @@ def _run_one_sequence(args, seq: Path, seq_out: Path) -> List[Dict[str, Any]]:
         print(f"\n--- Low-rank ablation: {seq.name}, {tag}, blocks={blocks}, rank={args.lowrank_ablation_rank}, params={params_before:,} ---")
 
         ckpt_path = variant_dir / f"{tag}_last.pt"
+        variant_args = copy.deepcopy(args)
+        variant_args.data_path = str(seq)
+        variant_args.out_dir = str(variant_dir)
         if ckpt_path.exists() and args.skip_existing_models:
             device = pick_device(args.device)
-            ckpt = torch.load(ckpt_path, map_location=device)
+            ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
             model.load_state_dict(ckpt["model"])
-            metrics = evaluate_lowrank_model(model.to(device), dataset, args, device, model_name=tag)
+            metrics = evaluate_lowrank_model(model.to(device), dataset, variant_args, device, model_name=tag)
+        elif args.skip_existing_models:
+            raise FileNotFoundError(f"Cannot evaluate missing checkpoint: {ckpt_path}")
+        elif ckpt_path.exists():
+            raise FileExistsError(f"Existing checkpoint preserved: {ckpt_path}. Use --skip_existing_models or a new --runs_root.")
         else:
-            variant_args = copy.deepcopy(args)
-            variant_args.data_path = str(seq)
-            variant_args.out_dir = str(variant_dir)
             metrics = train_lowrank_model(model, dataset, variant_args, variant_dir, model_name=tag)
             
         metrics.update({
@@ -261,10 +275,10 @@ def _run_one_sequence(args, seq: Path, seq_out: Path) -> List[Dict[str, Any]]:
             "baseline_dec_width": int(baseline_width),
         })
         rows.append(metrics)
-        pd.DataFrame(rows).to_csv(seq_out / "summary_partial.csv", index=False)
+        pd.DataFrame(rows).to_csv(seq_out / ("summary_recomputed_partial.csv" if args.skip_existing_models else "summary_partial.csv"), index=False)
 
-    pd.DataFrame(rows).to_csv(seq_out / "summary.csv", index=False)
-    save_json({"rows": rows}, seq_out / "summary.json")
+    pd.DataFrame(rows).to_csv(seq_out / ("summary_recomputed.csv" if args.skip_existing_models else "summary.csv"), index=False)
+    save_json({"rows": rows}, seq_out / ("summary_recomputed.json" if args.skip_existing_models else "summary.json"))
     return rows
 
 
@@ -287,8 +301,11 @@ def main():
         help="Do not train/evaluate the dense baseline; run only the low-rank ablation models."
     )
     parser.add_argument("--save_recon_dir", type=str, default=None)
+    parser.add_argument("--dense_only", action="store_true", help="Train/evaluate only the dense baseline")
     add_common_args(parser)
     args = parser.parse_args()
+    if args.dense_only and args.skip_baseline:
+        parser.error("--dense_only and --skip_baseline cannot be combined")
     if args.epochs_lowrank is None:
         args.epochs_lowrank = args.epochs_baseline
 
@@ -314,7 +331,7 @@ def main():
         all_dfs.append(pd.DataFrame(rows))
 
     combined = pd.concat(all_dfs, ignore_index=True)
-    combined_path = runs_root / "all_results.csv"
+    combined_path = runs_root / ("all_results_recomputed.csv" if args.skip_existing_models else "all_results.csv")
     combined.to_csv(combined_path, index=False)
     print(f"\nAll low-rank HNeRV ablation results saved to: {combined_path}")
     cols = [c for c in [

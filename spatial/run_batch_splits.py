@@ -1,25 +1,8 @@
-'''
-cd /shared/tshanableh/NeRV/HNeRV-DWT
-/shared/tshanableh/conda_envs/hnerv310/bin/python run_batch_splits.py \
-  --method quadrant \
-  --gpu 0 \
-  --epochs 300 \
-  --eval_freq 30 \
-  --expected_frames 132 \
-  --skip_existing \
-  --aggregate_after
+"""Historical batch runner for cropped spatial experiments.
 
-
-  cd /shared/tshanableh/NeRV/HNeRV-DWT
-/shared/tshanableh/conda_envs/hnerv310/bin/python run_batch_splits.py \
-  --method tile16 \
-  --gpu 1 \
-  --epochs 300 \
-  --eval_freq 30 \
-  --expected_frames 132 \
-  --skip_existing \
-  --aggregate_after
-'''
+This aggregates legacy spatial summaries. Its BPP column is an estimate and
+must not be compared to measured packed BPP from spatial/evaluate_packed.py.
+"""
 import argparse
 import csv
 import os
@@ -141,7 +124,7 @@ def aggregate() -> None:
             "ssim": kv.get("final_full_ssim", ""),
             "params_m": kv.get("sum_playback_total_m", ""),
             "gflops": kv.get("sum_decoder_gflops", ""),
-            "bpp": kv.get("sum_bpp", ""),
+            "legacy_estimated_bpp": kv.get("sum_bpp", ""),
             "quant_model_bit": kv.get("quant_model_bit", ""),
             "quant_embed_bit": kv.get("quant_embed_bit", ""),
             "prune_ratio": kv.get("prune_ratio", ""),
@@ -160,7 +143,7 @@ def aggregate() -> None:
             "ssim",
             "params_m",
             "gflops",
-            "bpp",
+            "legacy_estimated_bpp",
             "quant_model_bit",
             "quant_embed_bit",
             "prune_ratio",
@@ -181,7 +164,7 @@ def main():
     parser.add_argument("--eval_freq", type=int, default=30)
     parser.add_argument("--expected_frames", type=int, default=132)
     parser.add_argument("--sequences", nargs="+", default=DEFAULT_SEQUENCES)
-    parser.add_argument("--no_clean", action="store_true")
+    parser.add_argument("--clean", action="store_true", help="Explicitly replace an existing run directory")
     parser.add_argument("--skip_existing", action="store_true")
     parser.add_argument("--aggregate_after", action="store_true")
     args = parser.parse_args()
@@ -194,7 +177,7 @@ def main():
             epochs=args.epochs,
             eval_freq=args.eval_freq,
             expected_frames=args.expected_frames,
-            clean=not args.no_clean,
+            clean=args.clean,
             skip_existing=args.skip_existing,
         )
 

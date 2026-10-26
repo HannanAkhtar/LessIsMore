@@ -1,0 +1,66 @@
+{
+  "schema": "lessismore-experiment-manifest-v1",
+  "status": "reference_only_missing_primary_artifacts",
+  "source": "revised IEEE Access submission manuscript supplied with release task",
+  "cropped_protocol": {
+    "sequences": ["bunny", "honeybee", "jockey", "readysetgo", "yachtride"],
+    "frames_per_sequence": 132,
+    "frame_start_and_hashes": null,
+    "resolution_hw": [640, 1280],
+    "preprocess": "natural_filename_order_then_center_crop_from_720x1280",
+    "epochs": 300,
+    "batch_size": 2,
+    "wholeframe": {
+      "code": "run_framework.py wholeframe",
+      "budgets_m": [0.75, 1.5, 3.0],
+      "dense_checkpoint_ids": null,
+      "lrwide_checkpoint_ids": null,
+      "seed_default": 123,
+      "lowrank_blocks": [3, 4],
+      "rank": 88,
+      "model_bits": 8,
+      "embedding_bits": 8,
+      "prune_ratio": 0.1
+    },
+    "spatial4": {
+      "code": "spatial/run_experiment.py",
+      "dense_config": "spatial/configs/quadrant_dense_3m_reference.json",
+      "lrwide_config": "spatial/configs/quadrant_equal_lrwide.json",
+      "checkpoint_ids": null,
+      "honeybee_validated_seed": 2,
+      "honeybee_note": "Manuscript excludes an erroneous preliminary Honeybee run; original logs and exact checkpoint IDs are absent locally.",
+      "model_bits": 8,
+      "embedding_bits": 6,
+      "prune_ratio": 0.1
+    },
+    "spatial16": {
+      "historical_rank22_config": "spatial/configs/tile16_equal_3m_lrwide.json",
+      "rank23_candidate_config": "spatial/configs/tile16_rank23_0p198_unverified.json",
+      "published_checkpoint_ids": null,
+      "published_rank_from_manuscript": 23,
+      "provenance_verified_locally": false,
+      "model_bits": 8,
+      "embedding_bits": 6,
+      "prune_ratio": 0.1
+    },
+    "metric_protocol": "decoded_full_frame_PSNR_windowed_SSIM_measured_complete_archive_BPP_decoder_only_MACs_and_2x_GFLOPs"
+  },
+  "native_uvg_protocol": {
+    "sequences": ["beauty", "bosphorus", "honeybee", "jockey", "readysetgo", "shakendry", "yachtride"],
+    "total_frames": 3900,
+    "frame_counts": "six sequences with 600 frames; ShakeNDry with 300 frames",
+    "frame_start_and_hashes": null,
+    "resolution_hw": [1080, 1920],
+    "valid_tile_hw": [540, 960],
+    "padded_tile_hw_from_original_run": null,
+    "approximate_playback_parameters_m": 3.2,
+    "reported_decoder_gmacs_per_frame": 28.8,
+    "reported_average_psnr_db": 32.7,
+    "batch_size": 1,
+    "epochs": 300,
+    "rank": 43,
+    "training_config": null,
+    "checkpoint_ids": null,
+    "status": "implementation_and_artifacts_not_present_for_exact_reproduction"
+  }
+}

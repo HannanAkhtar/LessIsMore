@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +25,12 @@ def main() -> None:
     parser.add_argument("--embed_bits", type=int, default=8)
     parser.add_argument("--prune_ratio", type=float, default=0.10)
     parser.add_argument("--gpu", type=str, default=None, help="Optional CUDA_VISIBLE_DEVICES value, e.g. 0 or 1.")
+    parser.add_argument("--seed", type=int, default=123)
+    parser.add_argument("--baseline_decoder_m", type=float, default=3.0)
+    parser.add_argument("--lowrank_rank", type=int, default=88)
+    parser.add_argument("--lowrank_specs", nargs="+", default=["same_width:3,4", "widened:3,4"])
+    parser.add_argument("--dense_only", action="store_true")
+    parser.add_argument("--skip_baseline", action="store_true")
     parser.add_argument("--skip_existing_models", action="store_true", help="Reuse existing checkpoints and only recompute Q/P metrics.")
     args = parser.parse_args()
 
@@ -36,26 +43,35 @@ def main() -> None:
         "--epochs_baseline", str(args.epochs_baseline),
         "--epochs_lowrank", str(args.epochs_lowrank),
         "--batch_size", str(args.batch_size),
-        "--baseline_decoder_m", "3.0",
-        "--lowrank_ablation_rank", "88",
-        "--lowrank_ablation_specs", "same_width:3,4", "widened:3,4",
+        "--baseline_decoder_m", str(args.baseline_decoder_m),
+        "--lowrank_ablation_rank", str(args.lowrank_rank),
+        "--lowrank_ablation_specs", *args.lowrank_specs,
         "--model_bits", str(args.model_bits),
         "--embed_bits", str(args.embed_bits),
         "--prune_ratio", str(args.prune_ratio),
         "--eval_variant", "quant",
         "--flop_mult", "2",
         "--device", args.device,
+        "--seed", str(args.seed),
     ]
     if args.only:
         cmd += ["--only", *args.only]
     if args.skip_existing_models:
         cmd += ["--skip_existing_models"]
+    if args.dense_only and args.skip_baseline:
+        parser.error("--dense_only and --skip_baseline cannot be combined")
+    if args.dense_only:
+        cmd.append("--dense_only")
+    if args.skip_baseline:
+        cmd.append("--skip_baseline")
 
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    env["PYTHONNOUSERSITE"] = "1"
     if args.gpu is not None:
-        shell_cmd = "unset PYTHONPATH; export PYTHONNOUSERSITE=1; export CUDA_VISIBLE_DEVICES=" + args.gpu + "; " + " ".join(cmd)
-        run(["bash", "-lc", shell_cmd])
-    else:
-        run(cmd)
+        env["CUDA_VISIBLE_DEVICES"] = args.gpu
+    print("\n$ " + " ".join(cmd), flush=True)
+    subprocess.run(cmd, env=env, check=True)
 
 
 if __name__ == "__main__":

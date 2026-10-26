@@ -1,5 +1,3 @@
-# Unified project note:
-# The two original codebases used different pinned environments.
-# Prefer your existing HNeRV conda environment if it already runs both scripts.
-# For the standalone whole-frame LR-wide code, install:
+# Whole-frame default only. Spatial reference requirements are separate;
+# see README.md for the unvalidated historical model environments.
 -r requirements-lowrank.txt

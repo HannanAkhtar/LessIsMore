@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Historical rank-22 configuration. For manuscript rank-23 candidate use spatial-custom explicitly.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 python run_framework.py spatial16 \
@@ -8,5 +9,4 @@ python run_framework.py spatial16 \
   --eval_freq 30 \
   --expected_frames 132 \
   --batch_size 2 \
-  --gpu 0 \
-  --clean
+  --gpu 0
